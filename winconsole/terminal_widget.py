@@ -125,7 +125,7 @@ class TerminalWidget(QWidget):
             }
         """)
         self.input_field = AutoCompleteLineEdit(self, cwd=backend.cwd)
-        self.input_field.setPlaceholderText("输入命令后回车 (Tab 键自动补全)")
+        self.input_field.setPlaceholderText("$ 输入命令后回车 (Tab 键自动补全)")
         self.input_field.setStyleSheet("""
             QLineEdit {
                 background-color: #012456;
@@ -133,7 +133,12 @@ class TerminalWidget(QWidget):
                 font-family: Consolas, 'Cascadia Code', 'Courier New', monospace;
                 font-size: 12pt;
                 border: 1px solid #3A5F8A;
-                padding: 4px;
+                border-radius: 3px;
+                padding: 6px 10px;
+                padding-left: 12px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #61D6D6;
             }
         """)
         self.input_field.returnPressed.connect(self._handle_input)
@@ -148,7 +153,7 @@ class TerminalWidget(QWidget):
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(8)
         layout.addWidget(self.output_view, stretch=1)
         layout.addWidget(self.input_field, stretch=0)
         self.setLayout(layout)

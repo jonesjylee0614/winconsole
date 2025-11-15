@@ -52,10 +52,11 @@ class SessionListItemWidget(QWidget):
         name_font = self.name_label.font()
         name_font.setBold(True)
         self.name_label.setFont(name_font)
+        self.name_label.setStyleSheet("color: #FFFFFF;")
         self.path_label = QLabel()
-        self.path_label.setStyleSheet("color: #666666;")
+        self.path_label.setStyleSheet("color: #9999AA;")
         self.tags_label = QLabel()
-        self.tags_label.setStyleSheet("color: #888888;")
+        self.tags_label.setStyleSheet("color: #7788AA;")
         layout.addWidget(self.name_label)
         layout.addWidget(self.path_label)
         layout.addWidget(self.tags_label)
@@ -173,7 +174,7 @@ class SessionDetailWidget(QWidget):
         self.hints_layout = QVBoxLayout()
         hints_box.addLayout(self.hints_layout)
         self.shell_hint_label = QLabel("输入 wsl / cmd / powershell 以切换 Shell")
-        self.shell_hint_label.setStyleSheet("color: #555555; font-size: 11px;")
+        self.shell_hint_label.setStyleSheet("color: #AAAAAA; font-size: 11px;")
         hints_box.addWidget(self.shell_hint_label)
         hint_layout.addLayout(hints_box, stretch=1)
         actions_box = QVBoxLayout()
@@ -228,7 +229,7 @@ class SessionDetailWidget(QWidget):
                 self.hints_layout.addWidget(label)
         else:
             placeholder = QLabel("暂无提示")
-            placeholder.setStyleSheet("color: #777777;")
+            placeholder.setStyleSheet("color: #999999;")
             self.hints_layout.addWidget(placeholder)
 
     def _rebuild_actions(self, actions: List[SessionAction]):
@@ -244,7 +245,7 @@ class SessionDetailWidget(QWidget):
                 self.actions_layout.addWidget(button)
         else:
             placeholder = QLabel("未配置操作")
-            placeholder.setStyleSheet("color: #777777;")
+            placeholder.setStyleSheet("color: #999999;")
             self.actions_layout.addWidget(placeholder)
 
     def _handle_action_triggered(self, action: SessionAction):
@@ -414,6 +415,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config_path: str = "config/app.yaml", template_path: str = "config/sessions.yaml"):
         super().__init__()
         self.setWindowTitle("WinConsole Manager")
+        self._apply_dark_theme()
         self._ensure_pywinpty()
         self.app_config = load_app_config(config_path)
         bailian = None
@@ -436,6 +438,155 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._setup_shortcuts()
         self._load_initial_sessions()
+
+    def _apply_dark_theme(self):
+        """Apply a unified dark theme to all UI components"""
+        dark_stylesheet = """
+            QMainWindow, QWidget {
+                background-color: #1E1E1E;
+                color: #CCCCCC;
+            }
+            QToolBar {
+                background-color: #2D2D30;
+                border: none;
+                spacing: 6px;
+                padding: 4px;
+            }
+            QLabel {
+                color: #CCCCCC;
+            }
+            QComboBox {
+                background-color: #3C3C3C;
+                color: #CCCCCC;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 4px;
+                min-width: 100px;
+            }
+            QComboBox::drop-down {
+                border: none;
+                background-color: #555555;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid #CCCCCC;
+                margin-right: 4px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #3C3C3C;
+                color: #CCCCCC;
+                selection-background-color: #0E639C;
+                border: 1px solid #555555;
+            }
+            QPushButton {
+                background-color: #0E639C;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 3px;
+                padding: 6px 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1177BB;
+            }
+            QPushButton:pressed {
+                background-color: #0D5689;
+            }
+            QPushButton:disabled {
+                background-color: #555555;
+                color: #888888;
+            }
+            QToolButton {
+                background-color: #3C3C3C;
+                color: #CCCCCC;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 4px 8px;
+            }
+            QToolButton:hover {
+                background-color: #555555;
+            }
+            QListWidget {
+                background-color: #252526;
+                color: #CCCCCC;
+                border: 1px solid #3C3C3C;
+                outline: none;
+            }
+            QListWidget::item {
+                padding: 4px;
+                border-bottom: 1px solid #3C3C3C;
+            }
+            QListWidget::item:selected {
+                background-color: #0E639C;
+                color: #FFFFFF;
+            }
+            QListWidget::item:hover {
+                background-color: #2A2D2E;
+            }
+            QLineEdit {
+                background-color: #3C3C3C;
+                color: #CCCCCC;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 4px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #0E639C;
+            }
+            QTextEdit {
+                background-color: #1E1E1E;
+                color: #CCCCCC;
+                border: 1px solid #3C3C3C;
+            }
+            QFrame {
+                background-color: #2D2D30;
+                border: 1px solid #3C3C3C;
+            }
+            QSplitter::handle {
+                background-color: #3C3C3C;
+            }
+            QSplitter::handle:horizontal {
+                width: 2px;
+            }
+            QSplitter::handle:vertical {
+                height: 2px;
+            }
+            QScrollBar:vertical {
+                background-color: #1E1E1E;
+                width: 14px;
+                border: none;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #555555;
+                border-radius: 7px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #666666;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar:horizontal {
+                background-color: #1E1E1E;
+                height: 14px;
+                border: none;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #555555;
+                border-radius: 7px;
+                min-width: 20px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #666666;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0px;
+            }
+        """
+        self.setStyleSheet(dark_stylesheet)
 
     def _build_ui(self):
         toolbar = QToolBar("Templates")
