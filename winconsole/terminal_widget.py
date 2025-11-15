@@ -1,17 +1,98 @@
 from __future__ import annotations
 
+import os
+import glob
 import re
 import weakref
-from typing import Callable, Optional
+from typing import Callable, Optional, List
 
 try:
     from PyQt6.QtCore import Qt, pyqtSignal
-    from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+    from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QKeyEvent
     from PyQt6.QtWidgets import QLineEdit, QTextEdit, QVBoxLayout, QWidget
 except ImportError as exc:  # pragma: no cover - UI layer
     raise RuntimeError("PyQt6 is required to use TerminalWidget") from exc
 
 from .terminal_backend import TerminalBackend
+
+
+class AutoCompleteLineEdit(QLineEdit):
+    """Line edit with file path auto-completion support"""
+
+    def __init__(self, parent: Optional[QWidget] = None, cwd: str = ""):
+        super().__init__(parent)
+        self.cwd = cwd or os.getcwd()
+        self._completion_matches: List[str] = []
+        self._completion_index = 0
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key.Key_Tab:
+            self._handle_tab_completion()
+            event.accept()
+        else:
+            # Reset completion state on any other key
+            self._completion_matches = []
+            self._completion_index = 0
+            super().keyPressEvent(event)
+
+    def _handle_tab_completion(self):
+        text = self.text()
+        cursor_pos = self.cursorPosition()
+
+        # Extract the word/path at cursor position
+        before_cursor = text[:cursor_pos]
+        after_cursor = text[cursor_pos:]
+
+        # Find the last token (simplified - split by spaces)
+        tokens = before_cursor.split()
+        if not tokens:
+            return
+
+        partial = tokens[-1]
+        prefix = " ".join(tokens[:-1])
+        if prefix:
+            prefix += " "
+
+        # If we're cycling through completions, use the stored matches
+        if not self._completion_matches:
+            self._completion_matches = self._get_completions(partial)
+            self._completion_index = 0
+
+        if not self._completion_matches:
+            return
+
+        # Cycle through matches
+        match = self._completion_matches[self._completion_index]
+        self._completion_index = (self._completion_index + 1) % len(self._completion_matches)
+
+        # Update the text
+        new_text = prefix + match + after_cursor
+        self.setText(new_text)
+        self.setCursorPosition(len(prefix) + len(match))
+
+    def _get_completions(self, partial: str) -> List[str]:
+        """Get file/directory completions for a partial path"""
+        try:
+            # Handle absolute vs relative paths
+            if os.path.isabs(partial):
+                search_pattern = partial + "*"
+            else:
+                search_pattern = os.path.join(self.cwd, partial + "*")
+
+            # Get matching files/directories
+            matches = glob.glob(search_pattern)
+
+            # Convert to relative paths if the input was relative
+            if not os.path.isabs(partial):
+                matches = [os.path.relpath(m, self.cwd) for m in matches]
+
+            # Add trailing slash for directories
+            matches = [m + os.sep if os.path.isdir(os.path.join(self.cwd, m)) else m for m in matches]
+
+            # Sort and return unique matches
+            return sorted(set(matches))
+        except Exception:
+            return []
 
 
 class TerminalWidget(QWidget):
@@ -32,13 +113,38 @@ class TerminalWidget(QWidget):
         self.output_view.setAcceptRichText(True)
         self.output_view.setUndoRedoEnabled(False)
         self.output_view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        self.output_view.setStyleSheet("font-family: Consolas, 'Cascadia Code', monospace; font-size: 12px;")
-        self.input_field = QLineEdit(self)
-        self.input_field.setPlaceholderText("输入命令后回车")
+        # PowerShell-style dark theme
+        self.output_view.setStyleSheet("""
+            QTextEdit {
+                background-color: #012456;
+                color: #CCCCCC;
+                font-family: Consolas, 'Cascadia Code', 'Courier New', monospace;
+                font-size: 12pt;
+                selection-background-color: #FFFFFF;
+                selection-color: #000000;
+            }
+        """)
+        self.input_field = AutoCompleteLineEdit(self, cwd=backend.cwd)
+        self.input_field.setPlaceholderText("输入命令后回车 (Tab 键自动补全)")
+        self.input_field.setStyleSheet("""
+            QLineEdit {
+                background-color: #012456;
+                color: #CCCCCC;
+                font-family: Consolas, 'Cascadia Code', 'Courier New', monospace;
+                font-size: 12pt;
+                border: 1px solid #3A5F8A;
+                padding: 4px;
+            }
+        """)
         self.input_field.returnPressed.connect(self._handle_input)
+        # Set default format with PowerShell colors
         self._default_format = QTextCharFormat()
+        self._default_format.setForeground(QColor("#CCCCCC"))
+        self._default_format.setBackground(QColor("#012456"))
         self._current_format = QTextCharFormat(self._default_format)
-        self._ansi_pattern = re.compile(r"\x1B\[(?P<code>[0-9;]*)m")
+        # Match SGR codes (m) and other CSI sequences
+        self._ansi_pattern = re.compile(r"\x1B\[[0-9;?]*[a-zA-Z]")
+        self._sgr_pattern = re.compile(r"\x1B\[(?P<code>[0-9;]*)m")
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -69,12 +175,14 @@ class TerminalWidget(QWidget):
         self.input_field.clear()
 
     def _append_output(self, data: str):
+        # Remove carriage returns and common terminal control sequences
+        data = data.replace("\r\n", "\n").replace("\r", "")
         for chunk, fmt in self._parse_ansi(data):
             if not chunk:
                 continue
             cursor = self.output_view.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertText(chunk.replace("\r", ""), fmt)
+            cursor.insertText(chunk, fmt)
             self.output_view.setTextCursor(cursor)
         self.output_view.verticalScrollBar().setValue(self.output_view.verticalScrollBar().maximum())
 
@@ -106,15 +214,29 @@ class TerminalWidget(QWidget):
         backend.exited.connect(forward_exit)
 
     def _parse_ansi(self, data: str):
+        # First, remove all non-SGR ANSI sequences
+        cleaned = ""
         index = 0
         for match in self._ansi_pattern.finditer(data):
             start, end = match.span()
+            cleaned += data[index:start]
+            seq = match.group(0)
+            # Only keep SGR (Select Graphic Rendition) sequences
+            if seq[-1] == 'm':
+                cleaned += seq
+            index = end
+        cleaned += data[index:]
+
+        # Now parse SGR sequences for formatting
+        index = 0
+        for match in self._sgr_pattern.finditer(cleaned):
+            start, end = match.span()
             if start > index:
-                yield data[index:start], QTextCharFormat(self._current_format)
+                yield cleaned[index:start], QTextCharFormat(self._current_format)
             self._apply_ansi(match.group("code"))
             index = end
-        if index < len(data):
-            yield data[index:], QTextCharFormat(self._current_format)
+        if index < len(cleaned):
+            yield cleaned[index:], QTextCharFormat(self._current_format)
 
     def _apply_ansi(self, code: str):
         if not code:
@@ -143,14 +265,15 @@ class TerminalWidget(QWidget):
 
 
 def _ansi_color(code: int) -> str:
+    # PowerShell-style color palette
     palette = [
         "#000000",  # black
-        "#AA0000",  # red
-        "#00AA00",  # green
-        "#AA5500",  # yellow
-        "#0000AA",  # blue
-        "#AA00AA",  # magenta
-        "#00AAAA",  # cyan
-        "#AAAAAA",  # white
+        "#E74856",  # red (PowerShell red)
+        "#16C60C",  # green (PowerShell green)
+        "#F9F1A5",  # yellow (PowerShell yellow)
+        "#3B78FF",  # blue (PowerShell blue)
+        "#B4009E",  # magenta (PowerShell magenta)
+        "#61D6D6",  # cyan (PowerShell cyan)
+        "#CCCCCC",  # white (PowerShell gray)
     ]
     return palette[code % len(palette)]

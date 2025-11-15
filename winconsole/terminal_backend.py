@@ -75,7 +75,7 @@ class TerminalBackend:
             while True:
                 try:
                     chunk = spawn.read(1024)
-                except EOFError:
+                except (EOFError, ConnectionAbortedError, OSError):
                     break
                 if not chunk:
                     break
