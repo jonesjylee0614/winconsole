@@ -1,0 +1,62 @@
+- id: powershell-default
+  name: "PowerShell"
+  cmd: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+  args: []
+  cwd: "%USERPROFILE%"
+  tags: ["windows", "ps"]
+  title_format: "{name}#{index}"
+  description: "默认 PowerShell 会话，适合处理常规 Windows 自动化命令。"
+  encoding: "gbk"
+  hints:
+    - "使用 Get-ChildItem 快速查看当前目录内容。"
+    - "运行 git status 查看仓库状态。"
+    - "通过 code . 打开当前目录。"
+  actions:
+    - label: "列出目录"
+      command: "ls"
+    - label: "Git 状态"
+      command: "git status"
+    - label: "打开 VS Code"
+      command: "code ."
+
+- id: cmd-default
+  name: "Command Prompt"
+  cmd: "C:/Windows/System32/cmd.exe"
+  args: []
+  cwd: "%USERPROFILE%"
+  tags: ["windows", "cmd"]
+  description: "传统 CMD 会话，用于运行批处理脚本和简单工具链。"
+  encoding: "gbk"
+  hints:
+    - "先执行 dir /B 查看文件。"
+    - "使用 where python 检查解释器路径。"
+  actions:
+    - label: "列出文件"
+      command: "dir /B"
+    - label: "检查 Python"
+      command: "where python"
+
+- id: wsl-dev
+  name: "WSL Dev Shell"
+  cmd: "wsl.exe"
+  args:
+    - "--"
+    - "bash"
+    - "-lc"
+    - "cd /mnt/d/WorkSpace && exec bash"
+  cwd: "D:/WorkSpace"
+  tags: ["wsl", "linux"]
+  title_format: "{project}-{index}"
+  description: "进入预设 WSL 环境，快速切换到 /mnt/d/WorkSpace 进行开发。"
+  encoding: "utf-8"
+  hints:
+    - "运行 ls 查看同步后的工程。"
+    - "git fetch && git status 检查仓库状态。"
+    - "pytest -k <name> 运行目标测试。"
+  actions:
+    - label: "列出工程"
+      command: "ls"
+    - label: "Git 状态"
+      command: "git status"
+    - label: "运行 Pytest"
+      command: "pytest"

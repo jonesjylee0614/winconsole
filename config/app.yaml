@@ -1,0 +1,8 @@
+theme: "light"
+font_family: "Cascadia Code"
+font_size: 12
+bailian:
+  enabled: false
+  api_key: "${BAILIAN_API_KEY}"
+  model: "qwen-plus"
+  endpoint: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
