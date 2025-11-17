@@ -709,41 +709,158 @@ class MainWindow(QMainWindow):
             view.focus_terminal()
 
     def _show_shortcuts(self):
+        """Show comprehensive help dialog with shortcuts and tips."""
         dialog = QDialog(self)
-        dialog.setWindowTitle("快捷键")
+        dialog.setWindowTitle("快捷键与使用帮助")
+        dialog.setMinimumWidth(500)
         layout = QVBoxLayout(dialog)
+
+        # Add header
+        header = QLabel("WinConsole Manager - 快捷键参考")
+        header.setStyleSheet("font-size: 14pt; font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(header)
+
+        # Shortcuts section
+        shortcuts_label = QLabel("全局快捷键:")
+        shortcuts_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(shortcuts_label)
+
         shortcuts = [
-            ("Ctrl+N", "新建会话"),
-            ("Ctrl+W", "关闭当前会话"),
-            ("Ctrl+Tab", "切换到下一个可见会话"),
-            ("Ctrl+Shift+Tab", "切换到上一个可见会话"),
-            ("F5", "执行第一个常用操作"),
+            ("Ctrl+N", "新建会话", "从模板创建新的终端会话"),
+            ("Ctrl+W", "关闭当前会话", "关闭当前激活的终端会话"),
+            ("Ctrl+Tab", "切换到下一个会话", "在可见会话之间循环切换"),
+            ("Ctrl+Shift+Tab", "切换到上一个会话", "反向循环切换会话"),
+            ("F5", "执行默认操作", "运行当前会话的第一个常用操作"),
+            ("Ctrl+F", "搜索终端输出", "在当前终端输出中搜索文本"),
+            ("Tab", "自动补全", "在命令输入框中补全文件路径"),
         ]
-        for keys, desc in shortcuts:
+
+        for keys, title, desc in shortcuts:
             row = QHBoxLayout()
             key_label = QLabel(keys)
-            key_label.setStyleSheet("font-weight: bold;")
+            key_label.setStyleSheet("font-weight: bold; color: #0066CC; min-width: 120px;")
             row.addWidget(key_label)
-            row.addWidget(QLabel(desc), stretch=1)
+
+            desc_widget = QWidget()
+            desc_layout = QVBoxLayout(desc_widget)
+            desc_layout.setContentsMargins(0, 0, 0, 0)
+            desc_layout.setSpacing(2)
+
+            title_label = QLabel(title)
+            title_label.setStyleSheet("font-weight: bold;")
+            desc_layout.addWidget(title_label)
+
+            detail_label = QLabel(desc)
+            detail_label.setStyleSheet("color: #666666; font-size: 9pt;")
+            detail_label.setWordWrap(True)
+            desc_layout.addWidget(detail_label)
+
+            row.addWidget(desc_widget, stretch=1)
             layout.addLayout(row)
+
+        # Terminal tips section
+        tips_label = QLabel("终端使用技巧:")
+        tips_label.setStyleSheet("font-weight: bold; margin-top: 15px;")
+        layout.addWidget(tips_label)
+
+        tips = [
+            "• 输入 wsl / cmd / powershell 可快速切换 Shell 环境",
+            "• 会话关闭后将自动保存，重启应用时会恢复",
+            "• 可在 config/app.yaml 中自定义主题和字体",
+            "• 使用标签过滤器快速查找特定类型的会话",
+            "• 编辑会话描述可帮助记录工作内容",
+        ]
+
+        for tip in tips:
+            tip_label = QLabel(tip)
+            tip_label.setWordWrap(True)
+            tip_label.setStyleSheet("margin-left: 10px; color: #333333;")
+            layout.addWidget(tip_label)
+
+        # Configuration hint
+        config_label = QLabel("配置文件位置:")
+        config_label.setStyleSheet("font-weight: bold; margin-top: 15px;")
+        layout.addWidget(config_label)
+
+        config_paths = [
+            f"• 会话状态: ~/.winconsole/session_state.json",
+            f"• 日志文件: ~/.winconsole/logs/winconsole.log",
+            f"• 应用配置: config/app.yaml",
+            f"• 会话模板: config/sessions.yaml",
+        ]
+
+        for path in config_paths:
+            path_label = QLabel(path)
+            path_label.setWordWrap(True)
+            path_label.setStyleSheet("margin-left: 10px; font-family: monospace; color: #555555;")
+            layout.addWidget(path_label)
+
+        # Close button
         close_btn = QPushButton("关闭")
         close_btn.clicked.connect(dialog.accept)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
         dialog.exec()
 
     def _ensure_pywinpty(self):
+        """Check for pywinpty dependency with helpful error message."""
         if os.name != "nt":
             return
         from .terminal_backend import pywinpty
 
         if pywinpty is None:
-            QMessageBox.critical(
-                self,
-                "缺少依赖",
-                "WinConsole 需要安装 pywinpty 才能在 Windows 上提供交互式终端。\n"
-                "请在当前环境中执行以下命令后重启应用：\n"
-                "  pip install pywinpty\n或\n  conda install -c conda-forge pywinpty",
-            )
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Critical)
+            msg.setWindowTitle("缺少必需依赖")
+            msg.setText("WinConsole 需要 pywinpty 才能在 Windows 上运行")
+
+            detailed_text = """
+<h3>问题说明</h3>
+<p>pywinpty 是在 Windows 上提供交互式终端所必需的库。</p>
+
+<h3>解决方法</h3>
+<p>请选择以下方式之一安装 pywinpty：</p>
+
+<h4>方式 1: 使用 pip（推荐）</h4>
+<pre style="background-color: #f0f0f0; padding: 10px;">
+pip install pywinpty
+</pre>
+
+<h4>方式 2: 使用 conda</h4>
+<pre style="background-color: #f0f0f0; padding: 10px;">
+conda install -c conda-forge pywinpty
+</pre>
+
+<h4>方式 3: 使用项目预置的 wheel 文件</h4>
+<pre style="background-color: #f0f0f0; padding: 10px;">
+pip install pywinpty-2.0.13-cp311-none-win_amd64.whl
+</pre>
+
+<p style="margin-top: 15px;">
+<b>注意</b>: 安装完成后请重启 WinConsole。
+</p>
+
+<p>
+如果遇到问题，请查看日志文件：<br>
+<code>~/.winconsole/logs/winconsole.log</code>
+</p>
+"""
+            msg.setInformativeText("点击 '显示详细信息' 查看安装步骤")
+            msg.setDetailedText(detailed_text)
+
+            # Add custom buttons
+            copy_btn = msg.addButton("复制安装命令", QMessageBox.ButtonRole.ActionRole)
+            msg.addButton("退出", QMessageBox.ButtonRole.RejectRole)
+
+            msg.exec()
+
+            # If user clicked copy button
+            if msg.clickedButton() == copy_btn:
+                from PyQt6.QtWidgets import QApplication
+                clipboard = QApplication.clipboard()
+                clipboard.setText("pip install pywinpty")
+                QMessageBox.information(self, "已复制", "安装命令已复制到剪贴板")
+
             raise SystemExit(1)
 
     def closeEvent(self, event):
