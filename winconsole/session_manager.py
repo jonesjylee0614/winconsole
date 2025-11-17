@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Iterable, List, Optional
 
 from .models import Session, SessionOverrides, SessionState, SessionTemplate, merge_metadata
+from .persistence import SessionStatePersistence
 from .utils import EventHook
 
 LOG = logging.getLogger("winconsole")
@@ -19,6 +20,7 @@ class SessionManager:
         self.session_updated = EventHook()
         self._name_counters: Dict[str, itertools.count] = {}
         self._bailian = bailian_client
+        self._persistence = SessionStatePersistence()
 
     # Template operations
     def list_templates(self) -> List[SessionTemplate]:
@@ -55,6 +57,66 @@ class SessionManager:
     def update_session(self, session: Session):
         self.sessions[session.id] = session
         self.session_updated.emit(session)
+
+    def save_state(self) -> bool:
+        """Save all current sessions to disk.
+
+        Returns:
+            True if save was successful, False otherwise
+        """
+        return self._persistence.save_sessions(self.sessions)
+
+    def restore_state(self, emit_events: bool = True) -> int:
+        """Restore sessions from saved state.
+
+        Args:
+            emit_events: Whether to emit session_created events for restored sessions
+
+        Returns:
+            Number of sessions successfully restored
+        """
+        saved_sessions = self._persistence.load_sessions()
+        restored_count = 0
+
+        for session_data in saved_sessions:
+            try:
+                template_id = session_data.get("template_id")
+                if not template_id or template_id not in self.templates:
+                    LOG.warning("Skipping session with invalid template_id: %s", template_id)
+                    continue
+
+                # Create overrides from saved data
+                overrides_data = session_data.get("overrides", {})
+                overrides = SessionOverrides(
+                    custom_name=overrides_data.get("custom_name"),
+                    cwd=overrides_data.get("cwd"),
+                    env=overrides_data.get("env", {}),
+                )
+
+                # Create the session
+                session = self.create_session(template_id, overrides)
+
+                # Restore additional properties
+                if session_data.get("description"):
+                    session.description = session_data["description"]
+                if session_data.get("current_shell"):
+                    session.current_shell = session_data["current_shell"]
+                if session_data.get("display_name"):
+                    session.display_name = session_data["display_name"]
+
+                # Update the session to apply changes
+                self.update_session(session)
+
+                restored_count += 1
+                LOG.info("Restored session: %s (template: %s)",
+                        session.display_name, template_id)
+
+            except Exception as exc:
+                LOG.error("Failed to restore session: %s", exc)
+                continue
+
+        LOG.info("Restored %d sessions from saved state", restored_count)
+        return restored_count
 
     # Naming
     def derive_tab_title(
