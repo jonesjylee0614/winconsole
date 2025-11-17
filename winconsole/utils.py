@@ -63,22 +63,43 @@ class BailianClient:
         )
         return BailianResponse(text=text.strip(), metadata={"request_id": parsed.get("request_id", "")})
 
-    def suggest_tab_name(self, context: Dict[str, str]) -> Optional[str]:
+    def suggest_tab_name(self, context: Dict[str, str], max_retries: int = 2) -> Optional[str]:
+        """Suggest a tab name using Bailian AI with retry logic.
+
+        Args:
+            context: Context information for the suggestion
+            max_retries: Maximum number of retry attempts (default: 2)
+
+        Returns:
+            Suggested tab name or None if all attempts fail
+        """
         prompt = (
             "You are an assistant that crafts concise terminal tab titles.\n"
             "Use <= 24 characters. Avoid punctuation beyond dash/space.\n"
             f"Context: {json.dumps(context, ensure_ascii=False)}"
         )
-        try:
-            response = self.generate(prompt)
-            candidate = response.text.strip()
-            if not candidate:
-                return None
-            candidate = candidate.splitlines()[0].strip()
-            return candidate[:48]
-        except BailianError as exc:
-            LOG.warning("Bailian suggestion failed: %s", exc)
-            return None
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.generate(prompt)
+                candidate = response.text.strip()
+                if not candidate:
+                    return None
+                candidate = candidate.splitlines()[0].strip()
+                return candidate[:48]
+            except BailianError as exc:
+                if attempt < max_retries:
+                    # Exponential backoff: 0.5s, 1s
+                    delay = 0.5 * (2 ** attempt)
+                    LOG.warning("Bailian suggestion failed (attempt %d/%d): %s. Retrying in %.1fs...",
+                               attempt + 1, max_retries + 1, exc, delay)
+                    time.sleep(delay)
+                    continue
+                else:
+                    LOG.warning("Bailian suggestion failed after %d attempts: %s", max_retries + 1, exc)
+                    return None
+
+        return None
 
 
 class EventHook:

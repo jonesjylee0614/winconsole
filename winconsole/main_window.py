@@ -34,6 +34,7 @@ except ImportError as exc:  # pragma: no cover - UI layer
     raise RuntimeError("PyQt6 is required to launch the UI") from exc
 
 from .config_loader import load_app_config, load_session_templates
+from .constants import ACTION_BUTTON_RESET_DELAY_MS, APP_NAME
 from .models import Session, SessionAction, SessionOverrides, SessionState
 from .session_manager import SessionManager
 from .terminal_backend import TerminalBackend
@@ -104,13 +105,18 @@ class SessionDetailWidget(QWidget):
         _ShellProfile(["bash"], "Bash", "bash", ["-l"], "utf-8"),
     ]
 
-    def __init__(self, session: Session, on_session_updated):
+    def __init__(self, session: Session, on_session_updated, app_config=None):
         super().__init__()
         self.session = session
         self._on_session_updated = on_session_updated
+        self._app_config = app_config
         self._alias_map = self._build_shell_alias_map()
         self.backend = self._create_backend(session)
-        self.terminal = TerminalWidget(self.backend, command_handler=self._handle_pre_send)
+        self.terminal = TerminalWidget(
+            self.backend,
+            command_handler=self._handle_pre_send,
+            app_config=app_config
+        )
         self.terminal.exit_received.connect(self._handle_backend_exit)
 
         self.header_frame = QFrame(self)
@@ -256,7 +262,7 @@ class SessionDetailWidget(QWidget):
         self._send_command(action.command)
         if button:
             QTimer.singleShot(
-                1500,
+                ACTION_BUTTON_RESET_DELAY_MS,
                 lambda btn=button, label=action.label: self._reset_action_button(btn, label),
             )
 
@@ -369,7 +375,11 @@ class SessionDetailWidget(QWidget):
         index = layout.indexOf(self.terminal)
         layout.removeWidget(self.terminal)
         self.terminal.deleteLater()
-        self.terminal = TerminalWidget(self.backend, command_handler=self._handle_pre_send)
+        self.terminal = TerminalWidget(
+            self.backend,
+            command_handler=self._handle_pre_send,
+            app_config=self._app_config
+        )
         self.terminal.exit_received.connect(self._handle_backend_exit)
         layout.insertWidget(max(1, index), self.terminal, stretch=1)
         self.terminal.input_field.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -413,7 +423,7 @@ def _clear_layout(layout: QVBoxLayout | QHBoxLayout):
 class MainWindow(QMainWindow):
     def __init__(self, config_path: str = "config/app.yaml", template_path: str = "config/sessions.yaml"):
         super().__init__()
-        self.setWindowTitle("WinConsole Manager")
+        self.setWindowTitle(APP_NAME)
         self._ensure_pywinpty()
         self.app_config = load_app_config(config_path)
         bailian = None
@@ -499,16 +509,49 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("F5"), self).activated.connect(self._run_default_action)
 
     def _populate_tag_filter(self):
+        """Populate tag filter with tags from templates."""
         tags = sorted({tag for tpl in self.manager.list_templates() for tag in tpl.tags})
         for tag in tags:
             self.tag_filter.addItem(tag, tag)
+
+    def _refresh_tag_filter(self):
+        """Refresh tag filter with current session tags."""
+        # Save current selection
+        current_tag = self.tag_filter.currentData()
+
+        # Clear and rebuild
+        self.tag_filter.clear()
+        self.tag_filter.addItem("全部标签", None)
+
+        # Collect all unique tags from templates and current sessions
+        tags = set()
+        for tpl in self.manager.list_templates():
+            tags.update(tpl.tags)
+        for session in self.manager.sessions.values():
+            tags.update(session.tags)
+
+        # Add sorted tags
+        for tag in sorted(tags):
+            self.tag_filter.addItem(tag, tag)
+
+        # Restore selection if possible
+        if current_tag:
+            index = self.tag_filter.findData(current_tag)
+            if index >= 0:
+                self.tag_filter.setCurrentIndex(index)
 
     def _load_initial_sessions(self):
         if not self.manager.list_templates():
             QMessageBox.information(self, "提示", "未找到任何模板，先在 config/sessions.yaml 中配置")
             return
-        first_template = self.manager.list_templates()[0]
-        self.manager.create_session(first_template.id)
+
+        # Try to restore previous sessions first
+        restored_count = self.manager.restore_state()
+
+        # If no sessions were restored, create a default one
+        if restored_count == 0:
+            first_template = self.manager.list_templates()[0]
+            self.manager.create_session(first_template.id)
 
     def _handle_create_session(self):
         data = self.template_selector.currentData()
@@ -607,9 +650,12 @@ class MainWindow(QMainWindow):
         self._session_items[session.id] = item
         self._session_list_widgets[session.id] = widget
 
-        detail = SessionDetailWidget(session, self.manager.update_session)
+        detail = SessionDetailWidget(session, self.manager.update_session, self.app_config)
         self._session_views[session.id] = detail
         self.terminal_stack.addWidget(detail)
+
+        # Refresh tag filter with new tags
+        self._refresh_tag_filter()
 
         self._apply_filters()
         self._focus_on_session(session.id)
@@ -638,6 +684,10 @@ class MainWindow(QMainWindow):
         widget = self._session_list_widgets.get(session.id)
         if widget:
             widget.refresh(session)
+
+        # Refresh tag filter in case tags were updated
+        self._refresh_tag_filter()
+
         self._apply_filters()
 
     def _refresh_placeholder_visibility(self):
@@ -695,3 +745,14 @@ class MainWindow(QMainWindow):
                 "  pip install pywinpty\n或\n  conda install -c conda-forge pywinpty",
             )
             raise SystemExit(1)
+
+    def closeEvent(self, event):
+        """Handle window close event - save session state before closing."""
+        # Save current sessions to disk
+        self.manager.save_state()
+
+        # Shutdown all session backends
+        for view in self._session_views.values():
+            view.shutdown()
+
+        event.accept()

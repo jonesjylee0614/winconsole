@@ -13,7 +13,12 @@ try:
 except ImportError as exc:  # pragma: no cover - UI layer
     raise RuntimeError("PyQt6 is required to use TerminalWidget") from exc
 
+from .models import AppConfig
 from .terminal_backend import TerminalBackend
+from .themes import get_theme
+
+# Constants
+MAX_OUTPUT_LINES = 2000  # Maximum number of lines to keep in output buffer
 
 
 class AutoCompleteLineEdit(QLineEdit):
@@ -104,43 +109,56 @@ class TerminalWidget(QWidget):
         backend: TerminalBackend,
         parent: Optional[QWidget] = None,
         command_handler: Optional[Callable[[str], bool]] = None,
+        app_config: Optional[AppConfig] = None,
     ):
         super().__init__(parent)
         self.backend = backend
         self._command_handler = command_handler
+
+        # Use app_config or create default
+        if app_config is None:
+            from .models import AppConfig
+            app_config = AppConfig()
+        self.app_config = app_config
+
+        # Get theme colors
+        theme = get_theme(app_config.theme)
+
         self.output_view = QTextEdit(self)
         self.output_view.setReadOnly(True)
         self.output_view.setAcceptRichText(True)
         self.output_view.setUndoRedoEnabled(False)
         self.output_view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        # PowerShell-style dark theme
-        self.output_view.setStyleSheet("""
-            QTextEdit {
-                background-color: #012456;
-                color: #CCCCCC;
-                font-family: Consolas, 'Cascadia Code', 'Courier New', monospace;
-                font-size: 12pt;
-                selection-background-color: #FFFFFF;
-                selection-color: #000000;
-            }
+
+        # Apply theme from config
+        self.output_view.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {theme['terminal_bg']};
+                color: {theme['terminal_fg']};
+                font-family: {app_config.font_family}, Consolas, 'Cascadia Code', 'Courier New', monospace;
+                font-size: {app_config.font_size}pt;
+                selection-background-color: {theme['selection_bg']};
+                selection-color: {theme['selection_fg']};
+            }}
         """)
+
         self.input_field = AutoCompleteLineEdit(self, cwd=backend.cwd)
         self.input_field.setPlaceholderText("输入命令后回车 (Tab 键自动补全)")
-        self.input_field.setStyleSheet("""
-            QLineEdit {
-                background-color: #012456;
-                color: #CCCCCC;
-                font-family: Consolas, 'Cascadia Code', 'Courier New', monospace;
-                font-size: 12pt;
-                border: 1px solid #3A5F8A;
+        self.input_field.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {theme['input_bg']};
+                color: {theme['input_fg']};
+                font-family: {app_config.font_family}, Consolas, 'Cascadia Code', 'Courier New', monospace;
+                font-size: {app_config.font_size}pt;
+                border: 1px solid {theme['input_border']};
                 padding: 4px;
-            }
+            }}
         """)
         self.input_field.returnPressed.connect(self._handle_input)
-        # Set default format with PowerShell colors
+        # Set default format with theme colors
         self._default_format = QTextCharFormat()
-        self._default_format.setForeground(QColor("#CCCCCC"))
-        self._default_format.setBackground(QColor("#012456"))
+        self._default_format.setForeground(QColor(theme['terminal_fg']))
+        self._default_format.setBackground(QColor(theme['terminal_bg']))
         self._current_format = QTextCharFormat(self._default_format)
         # Match SGR codes (m) and other CSI sequences
         self._ansi_pattern = re.compile(r"\x1B\[[0-9;?]*[a-zA-Z]")
@@ -184,7 +202,36 @@ class TerminalWidget(QWidget):
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertText(chunk, fmt)
             self.output_view.setTextCursor(cursor)
+
+        # Limit the number of lines in the output buffer
+        self._trim_output_buffer()
+
+        # Scroll to bottom
         self.output_view.verticalScrollBar().setValue(self.output_view.verticalScrollBar().maximum())
+
+    def _trim_output_buffer(self):
+        """Trim output buffer to maximum number of lines."""
+        doc = self.output_view.document()
+        block_count = doc.blockCount()
+
+        if block_count > MAX_OUTPUT_LINES:
+            # Calculate how many lines to remove
+            lines_to_remove = block_count - MAX_OUTPUT_LINES
+
+            # Create cursor at the beginning
+            cursor = QTextCursor(doc)
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+
+            # Select lines to remove
+            for _ in range(lines_to_remove):
+                cursor.movePosition(
+                    QTextCursor.MoveOperation.Down,
+                    QTextCursor.MoveMode.KeepAnchor
+                )
+
+            # Remove the selected text
+            cursor.removeSelectedText()
+            cursor.deleteChar()  # Remove the trailing newline
 
     def _handle_exit(self, code: int):
         self.input_field.setDisabled(True)
