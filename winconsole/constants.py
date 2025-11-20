@@ -34,3 +34,24 @@ STATE_FILE_VERSION = "1.0"
 BAILIAN_MAX_RETRIES = 2
 BAILIAN_RETRY_BASE_DELAY = 0.5  # seconds
 BAILIAN_DEFAULT_TIMEOUT = 5.0  # seconds
+
+# TUI programs that require full terminal emulation
+# These programs use advanced terminal features (raw mode, ANSI sequences, etc.)
+# and may not work correctly in simplified terminal implementations
+TUI_PROGRAMS = {
+    # AI coding assistants
+    'codex', 'claude', 'aider', 'cursor',
+
+    # Editors
+    'vim', 'nvim', 'neovim', 'vi', 'nano', 'emacs', 'micro',
+
+    # System monitors
+    'htop', 'top', 'btop', 'gotop', 'ytop', 'glances',
+
+    # File managers
+    'mc', 'ranger', 'nnn', 'lf', 'vifm',
+
+    # Other TUI tools
+    'tmux', 'screen', 'weechat', 'irssi', 'mutt', 'lynx', 'w3m',
+    'tig', 'lazygit', 'gitui', 'ncdu', 'cmus', 'ncmpcpp',
+}

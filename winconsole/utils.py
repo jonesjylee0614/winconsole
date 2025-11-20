@@ -138,3 +138,70 @@ def throttle(delay: float):
         return wrapper
 
     return decorator
+
+
+def is_tui_program(cmd: str) -> bool:
+    """Check if a command is a TUI program that requires full terminal emulation.
+
+    Args:
+        cmd: Command name or path
+
+    Returns:
+        True if the command is a known TUI program
+    """
+    from .constants import TUI_PROGRAMS
+
+    # Get just the program name (without path)
+    program_name = os.path.basename(cmd).lower()
+
+    # Remove common extensions
+    if program_name.endswith('.exe'):
+        program_name = program_name[:-4]
+
+    return program_name in TUI_PROGRAMS
+
+
+def open_in_external_terminal(cmd: str, args: list[str], cwd: str) -> bool:
+    """Open a command in an external terminal (Windows Terminal or cmd).
+
+    Args:
+        cmd: Command to run
+        args: Command arguments
+        cwd: Working directory
+
+    Returns:
+        True if successfully launched
+    """
+    import subprocess
+    import shutil
+
+    # Combine command and args for display
+    full_cmd = cmd
+    if args:
+        full_cmd += ' ' + ' '.join(args)
+
+    try:
+        # Try Windows Terminal first (wt.exe)
+        if shutil.which('wt.exe') or shutil.which('wt'):
+            # Windows Terminal syntax:
+            # wt.exe -d <directory> -- <command> <args...>
+            # Note: No '--' between -d and command, just before the actual command
+            wt_cmd = ['wt.exe', '-d', cwd, cmd] + args
+            LOG.info(f"Launching Windows Terminal: {wt_cmd}")
+            subprocess.Popen(wt_cmd, shell=False)
+            LOG.info(f"Opened in Windows Terminal: {full_cmd}")
+            return True
+    except Exception as e:
+        LOG.warning(f"Failed to open in Windows Terminal: {e}")
+
+    try:
+        # Fallback to cmd.exe
+        # Use /k to keep window open after command exits
+        cmd_exe = ['cmd.exe', '/k', f'cd /d "{cwd}" && {full_cmd}']
+        LOG.info(f"Launching cmd.exe: {cmd_exe}")
+        subprocess.Popen(cmd_exe, shell=False, cwd=cwd)
+        LOG.info(f"Opened in cmd.exe: {full_cmd}")
+        return True
+    except Exception as e:
+        LOG.error(f"Failed to open in cmd.exe: {e}")
+        return False

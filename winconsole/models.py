@@ -117,7 +117,7 @@ class BailianConfig:
 
 @dataclass
 class AppConfig:
-    theme: str = "light"
+    theme: str = "vscode-dark"  # 默认使用 VS Code 深色主题
     font_family: str = "Cascadia Code"
     font_size: int = 12
     bailian: BailianConfig = field(default_factory=BailianConfig)

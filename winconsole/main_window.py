@@ -1,423 +1,32 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict
 
-import os
-
-try:
-    from PyQt6.QtCore import Qt, QTimer
-    from PyQt6.QtGui import QKeySequence, QShortcut
-    from PyQt6.QtWidgets import (
-        QComboBox,
-        QDialog,
-        QFrame,
-        QGridLayout,
-        QHBoxLayout,
-        QInputDialog,
-        QLabel,
-        QLineEdit,
-        QListWidget,
-        QListWidgetItem,
-        QMainWindow,
-        QMessageBox,
-        QPushButton,
-        QSplitter,
-        QStackedWidget,
-        QToolBar,
-        QToolButton,
-        QVBoxLayout,
-        QWidget,
-    )
-except ImportError as exc:  # pragma: no cover - UI layer
-    raise RuntimeError("PyQt6 is required to launch the UI") from exc
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QPushButton,
+    QSplitter,
+    QStackedWidget,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .config_loader import load_app_config, load_session_templates
-from .constants import ACTION_BUTTON_RESET_DELAY_MS, APP_NAME
-from .models import Session, SessionAction, SessionOverrides, SessionState
+from .constants import APP_NAME
 from .session_manager import SessionManager
-from .terminal_backend import TerminalBackend
-from .terminal_widget import TerminalWidget
+from .ui.session_detail import SessionDetailWidget
+from .ui.session_list import SessionListItemWidget
+from .ui.styles import MAIN_WINDOW_STYLESHEET
 from .utils import BailianClient
-
-
-class SessionListItemWidget(QWidget):
-    def __init__(self, session: Session, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._session = session
-        layout = QVBoxLayout()
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(2)
-        self.name_label = QLabel()
-        name_font = self.name_label.font()
-        name_font.setBold(True)
-        self.name_label.setFont(name_font)
-        self.path_label = QLabel()
-        self.path_label.setStyleSheet("color: #666666;")
-        self.tags_label = QLabel()
-        self.tags_label.setStyleSheet("color: #888888;")
-        layout.addWidget(self.name_label)
-        layout.addWidget(self.path_label)
-        layout.addWidget(self.tags_label)
-        self.setLayout(layout)
-        self.refresh(session)
-
-    def refresh(self, session: Session):
-        self._session = session
-        self.name_label.setText(f"{session.display_name} {self._state_badge(session.state)}")
-        self.path_label.setText(f"路径: {self._format_path(session.cwd)}")
-        tags = " ".join(f"[{tag}]" for tag in session.tags) if session.tags else "[无标签]"
-        self.tags_label.setText(tags)
-
-    def _format_path(self, cwd: str) -> str:
-        if not cwd:
-            return "默认目录"
-        path = Path(cwd)
-        tail = path.name or str(path)
-        if len(str(path)) == len(tail):
-            return tail
-        return f".../{tail}"
-
-    def _state_badge(self, state: SessionState) -> str:
-        if state == SessionState.RUNNING:
-            return "●"
-        if state == SessionState.EXITED:
-            return "○"
-        return "•"
-
-
-@dataclass(frozen=True)
-class _ShellProfile:
-    aliases: List[str]
-    label: str
-    cmd: str
-    args: List[str]
-    encoding: str
-    cwd: Optional[str] = None
-
-
-class SessionDetailWidget(QWidget):
-    BUILTIN_SHELLS: List[_ShellProfile] = [
-        _ShellProfile(["wsl"], "WSL (bash)", "wsl.exe", [], "utf-8"),
-        _ShellProfile(["cmd", "command prompt"], "Command Prompt", "cmd.exe", [], "gbk"),
-        _ShellProfile(["powershell", "pwsh"], "PowerShell", "powershell.exe", [], "gbk"),
-        _ShellProfile(["bash"], "Bash", "bash", ["-l"], "utf-8"),
-    ]
-
-    def __init__(self, session: Session, on_session_updated, app_config=None):
-        super().__init__()
-        self.session = session
-        self._on_session_updated = on_session_updated
-        self._app_config = app_config
-        self._alias_map = self._build_shell_alias_map()
-        self.backend = self._create_backend(session)
-        self.terminal = TerminalWidget(
-            self.backend,
-            command_handler=self._handle_pre_send,
-            app_config=app_config
-        )
-        self.terminal.exit_received.connect(self._handle_backend_exit)
-
-        self.header_frame = QFrame(self)
-        header_layout = QVBoxLayout()
-        header_layout.setContentsMargins(6, 6, 6, 6)
-        header_layout.setSpacing(4)
-        top_row = QHBoxLayout()
-        self.name_label = QLabel()
-        title_font = self.name_label.font()
-        title_font.setPointSize(title_font.pointSize() + 1)
-        title_font.setBold(True)
-        self.name_label.setFont(title_font)
-        top_row.addWidget(self.name_label)
-        top_row.addStretch()
-        self.state_label = QLabel()
-        self.state_label.setStyleSheet("font-weight: bold;")
-        top_row.addWidget(self.state_label)
-        self.restart_btn = QToolButton()
-        self.restart_btn.setText("重启 Shell")
-        self.restart_btn.clicked.connect(self._handle_restart_shell)
-        top_row.addWidget(self.restart_btn)
-        header_layout.addLayout(top_row)
-
-        info_grid = QGridLayout()
-        info_grid.setVerticalSpacing(2)
-        info_grid.addWidget(QLabel("Shell:"), 0, 0)
-        self.shell_label = QLabel()
-        info_grid.addWidget(self.shell_label, 0, 1)
-        info_grid.addWidget(QLabel("路径:"), 0, 2)
-        self.cwd_label = QLabel()
-        self.cwd_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        info_grid.addWidget(self.cwd_label, 0, 3)
-        info_grid.addWidget(QLabel("标签:"), 1, 0)
-        self.tags_label = QLabel()
-        self.tags_label.setWordWrap(True)
-        info_grid.addWidget(self.tags_label, 1, 1, 1, 3)
-        header_layout.addLayout(info_grid)
-
-        desc_row = QHBoxLayout()
-        desc_label = QLabel("描述:")
-        self.description_label = QLabel()
-        self.description_label.setWordWrap(True)
-        desc_row.addWidget(desc_label)
-        desc_row.addWidget(self.description_label, stretch=1)
-        self.edit_desc_btn = QToolButton()
-        self.edit_desc_btn.setText("编辑")
-        self.edit_desc_btn.clicked.connect(self._handle_edit_description)
-        desc_row.addWidget(self.edit_desc_btn)
-        header_layout.addLayout(desc_row)
-        self.header_frame.setLayout(header_layout)
-
-        self.hint_frame = QFrame(self)
-        hint_layout = QHBoxLayout()
-        hint_layout.setContentsMargins(6, 6, 6, 6)
-        hint_layout.setSpacing(6)
-        hints_box = QVBoxLayout()
-        hints_title = QLabel("提示")
-        hints_title.setStyleSheet("font-weight: bold;")
-        hints_box.addWidget(hints_title)
-        self.hints_layout = QVBoxLayout()
-        hints_box.addLayout(self.hints_layout)
-        self.shell_hint_label = QLabel("输入 wsl / cmd / powershell 以切换 Shell")
-        self.shell_hint_label.setStyleSheet("color: #555555; font-size: 11px;")
-        hints_box.addWidget(self.shell_hint_label)
-        hint_layout.addLayout(hints_box, stretch=1)
-        actions_box = QVBoxLayout()
-        actions_title = QLabel("常用操作")
-        actions_title.setStyleSheet("font-weight: bold;")
-        actions_box.addWidget(actions_title)
-        self.actions_layout = QHBoxLayout()
-        self.actions_layout.setSpacing(6)
-        self._action_buttons: Dict[str, QPushButton] = {}
-        actions_box.addLayout(self.actions_layout)
-        hint_layout.addLayout(actions_box, stretch=0)
-        self.hint_frame.setLayout(hint_layout)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.header_frame)
-        layout.addWidget(self.terminal, stretch=1)
-        layout.addWidget(self.hint_frame)
-        self.setLayout(layout)
-        self.refresh(session)
-        if not self.session.current_shell:
-            self.session.current_shell = self._current_shell_label(self.session.cmd)
-            self._on_session_updated(self.session)
-
-    def refresh(self, session: Session):
-        self.session = session
-        self.name_label.setText(session.display_name)
-        label = session.current_shell or self._current_shell_label(session.cmd)
-        self.shell_label.setText(label)
-        self.cwd_label.setText(session.cwd or "-")
-        tags = " ".join(f"[{tag}]" for tag in session.tags) if session.tags else "[无标签]"
-        self.tags_label.setText(tags)
-        self.description_label.setText(session.description or "暂无描述")
-        self._update_state_label(session.state)
-        self._rebuild_hints(session.hints)
-        self._rebuild_actions(session.actions)
-
-    def _update_state_label(self, state: SessionState, exit_code: Optional[int] = None):
-        if state == SessionState.RUNNING:
-            self.state_label.setText('<span style="color:#2ecc71;">●</span> 运行中')
-        elif state == SessionState.EXITED:
-            details = f"(code {exit_code})" if exit_code is not None else ""
-            self.state_label.setText(f'<span style="color:#999999;">○</span> 已退出 {details}'.strip())
-        else:
-            self.state_label.setText('<span style="color:#f1c40f;">•</span> 等待启动')
-
-    def _rebuild_hints(self, hints: List[str]):
-        _clear_layout(self.hints_layout)
-        if hints:
-            for hint in hints:
-                label = QLabel(f"• {hint}")
-                label.setWordWrap(True)
-                self.hints_layout.addWidget(label)
-        else:
-            placeholder = QLabel("暂无提示")
-            placeholder.setStyleSheet("color: #777777;")
-            self.hints_layout.addWidget(placeholder)
-
-    def _rebuild_actions(self, actions: List[SessionAction]):
-        _clear_layout(self.actions_layout)
-        self._action_buttons.clear()
-        if actions:
-            for action in actions:
-                button = QPushButton(action.label)
-                button.setProperty("action_label", action.label)
-                button.setToolTip(action.command)
-                button.clicked.connect(lambda _=False, act=action: self._handle_action_triggered(act))
-                self._action_buttons[action.label] = button
-                self.actions_layout.addWidget(button)
-        else:
-            placeholder = QLabel("未配置操作")
-            placeholder.setStyleSheet("color: #777777;")
-            self.actions_layout.addWidget(placeholder)
-
-    def _handle_action_triggered(self, action: SessionAction):
-        button = self._action_buttons.get(action.label)
-        if button:
-            button.setEnabled(False)
-            button.setText(f"{action.label} (执行中)")
-        self.terminal.display_system_message(f"[Action] {action.label}: {action.command}")
-        self._send_command(action.command)
-        if button:
-            QTimer.singleShot(
-                ACTION_BUTTON_RESET_DELAY_MS,
-                lambda btn=button, label=action.label: self._reset_action_button(btn, label),
-            )
-
-    def _reset_action_button(self, button: QPushButton, label: str):
-        button.setEnabled(True)
-        button.setText(label)
-
-    def run_default_action(self) -> bool:
-        if not self.session.actions:
-            return False
-        self._handle_action_triggered(self.session.actions[0])
-        return True
-
-    def _send_command(self, command: str):
-        payload = command.rstrip("\n") + "\n"
-        self.backend.send(payload)
-
-    def focus_terminal(self):
-        self.terminal.input_field.setFocus(Qt.FocusReason.OtherFocusReason)
-
-    def shutdown(self):
-        self.backend.terminate()
-
-    def _handle_edit_description(self):
-        text, ok = QInputDialog.getMultiLineText(
-            self,
-            "编辑描述",
-            "描述内容：",
-            self.session.description,
-        )
-        if not ok:
-            return
-        self.session.description = text.strip()
-        self._on_session_updated(self.session)
-        self.refresh(self.session)
-
-    def _current_shell_label(self, command: str) -> str:
-        command_lower = command.lower()
-        for profile in self.BUILTIN_SHELLS:
-            if any(alias in command_lower for alias in profile.aliases):
-                return profile.label
-        if "cmd.exe" in command_lower:
-            return "Command Prompt"
-        if "powershell" in command_lower:
-            return "PowerShell"
-        if "wsl" in command_lower:
-            return "WSL"
-        if "bash" in command_lower:
-            return "Bash"
-        return Path(command).name or command
-
-    def _handle_backend_exit(self, code: int):
-        self.session.state = SessionState.EXITED
-        self._on_session_updated(self.session)
-        self._update_state_label(SessionState.EXITED, code)
-        self.terminal.display_system_message(f"进程已退出 (code {code})")
-
-    def _build_shell_alias_map(self) -> Dict[str, _ShellProfile]:
-        mapping: Dict[str, _ShellProfile] = {}
-        for profile in self.BUILTIN_SHELLS:
-            for alias in profile.aliases:
-                mapping[alias.lower()] = profile
-        return mapping
-
-    def _handle_pre_send(self, text: str) -> bool:
-        key = text.strip()
-        if not key:
-            return False
-        tokens = key.split()
-        alias = tokens[0].lower()
-        profile = self._alias_map.get(alias)
-        if not profile:
-            return False
-        extra_args = tokens[1:]
-        self._switch_shell(profile, extra_args)
-        return True
-
-    def _handle_restart_shell(self):
-        self.terminal.display_system_message("正在重启当前 shell …")
-        self.backend.terminate()
-        self.session.state = SessionState.RUNNING
-        self.backend = self._create_backend(self.session)
-        self._replace_terminal_widget()
-        self._on_session_updated(self.session)
-        label = self.session.current_shell or self._current_shell_label(self.session.cmd)
-        self.terminal.display_system_message(f"已重启 {label}")
-
-    def _switch_shell(self, profile: _ShellProfile, extra_args: List[str]):
-        self.terminal.display_system_message(f"正在切换到 {profile.label} …")
-        self.backend.terminate()
-        args = list(profile.args)
-        if extra_args:
-            args.extend(extra_args)
-        self.session.cmd = profile.cmd
-        self.session.args = args
-        self.session.encoding = profile.encoding
-        self.session.cwd = profile.cwd or self.session.cwd
-        self.session.state = SessionState.RUNNING
-        self.session.current_shell = profile.label
-        self.backend = self._create_backend(self.session)
-        self._replace_terminal_widget()
-        self.shell_label.setText(profile.label)
-        self._on_session_updated(self.session)
-        self.terminal.display_system_message(f"已切换到 {profile.label}")
-
-    def _replace_terminal_widget(self):
-        layout = self.layout()
-        if not layout:
-            return
-        index = layout.indexOf(self.terminal)
-        layout.removeWidget(self.terminal)
-        self.terminal.deleteLater()
-        self.terminal = TerminalWidget(
-            self.backend,
-            command_handler=self._handle_pre_send,
-            app_config=self._app_config
-        )
-        self.terminal.exit_received.connect(self._handle_backend_exit)
-        layout.insertWidget(max(1, index), self.terminal, stretch=1)
-        self.terminal.input_field.setFocus(Qt.FocusReason.OtherFocusReason)
-
-    def _create_backend(self, session: Session) -> TerminalBackend:
-        args = list(session.args)
-        if self._is_wsl_command(session.cmd) and not args:
-            args = self._default_wsl_args()
-            session.args = list(args)
-        return TerminalBackend(
-            session.cmd,
-            args,
-            session.cwd,
-            session.env,
-            encoding=session.encoding,
-        )
-
-    def _is_wsl_command(self, command: str) -> bool:
-        return "wsl" in command.lower()
-
-    def _default_wsl_args(self) -> List[str]:
-        return [
-            "--",
-            "bash",
-            "-lc",
-            "source ~/.bashrc >/dev/null 2>&1; exec bash -l",
-        ]
-
-
-def _clear_layout(layout: QVBoxLayout | QHBoxLayout):
-    while layout.count():
-        item = layout.takeAt(0)
-        widget = item.widget()
-        if widget:
-            widget.deleteLater()
-        child_layout = item.layout()
-        if child_layout:
-            _clear_layout(child_layout)  # type: ignore[arg-type]
 
 
 class MainWindow(QMainWindow):
@@ -448,6 +57,9 @@ class MainWindow(QMainWindow):
         self._load_initial_sessions()
 
     def _build_ui(self):
+        # Apply modern dark theme matching PowerShell aesthetics
+        self.setStyleSheet(MAIN_WINDOW_STYLESHEET)
+
         toolbar = QToolBar("Templates")
         self.addToolBar(toolbar)
         self.template_selector = QComboBox()
@@ -466,6 +78,8 @@ class MainWindow(QMainWindow):
         splitter = QSplitter()
         left_container = QWidget()
         left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(8)
         filter_row = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜索会话/描述/路径")
@@ -519,357 +133,181 @@ class MainWindow(QMainWindow):
         # Save current selection
         current_tag = self.tag_filter.currentData()
 
-        # Clear and rebuild
-        self.tag_filter.clear()
-        self.tag_filter.addItem("全部标签", None)
-
         # Collect all unique tags from templates and current sessions
         tags = set()
         for tpl in self.manager.list_templates():
             tags.update(tpl.tags)
         for session in self.manager.sessions.values():
             tags.update(session.tags)
+        
+        sorted_tags = sorted(tags)
 
-        # Add sorted tags
-        for tag in sorted(tags):
+        # Check if we really need to update (optimization)
+        current_items = [self.tag_filter.itemText(i) for i in range(1, self.tag_filter.count())]
+        if current_items == sorted_tags:
+            return
+
+        # Clear and rebuild
+        self.tag_filter.clear()
+        self.tag_filter.addItem("全部标签", None)
+
+        for tag in sorted_tags:
             self.tag_filter.addItem(tag, tag)
 
         # Restore selection if possible
-        if current_tag:
-            index = self.tag_filter.findData(current_tag)
-            if index >= 0:
-                self.tag_filter.setCurrentIndex(index)
+        index = self.tag_filter.findData(current_tag)
+        if index >= 0:
+            self.tag_filter.setCurrentIndex(index)
 
     def _load_initial_sessions(self):
-        if not self.manager.list_templates():
-            QMessageBox.information(self, "提示", "未找到任何模板，先在 config/sessions.yaml 中配置")
-            return
+        # In a real app, we might load persisted sessions here
+        pass
 
-        # Try to restore previous sessions first
-        restored_count = self.manager.restore_state()
-
-        # If no sessions were restored, create a default one
-        if restored_count == 0:
-            first_template = self.manager.list_templates()[0]
-            self.manager.create_session(first_template.id)
+    def _ensure_pywinpty(self):
+        try:
+            import winpty  # noqa: F401
+        except ImportError:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                self,
+                "Missing Dependency",
+                "pywinpty is required but not installed.\nPlease install it with: pip install pywinpty"
+            )
 
     def _handle_create_session(self):
-        data = self.template_selector.currentData()
-        if not data:
+        template_id = self.template_selector.currentData()
+        if not template_id:
             return
-        overrides = SessionOverrides()
-        runtime = {"project": "default", "env": "local"}
-        self.manager.create_session(data, overrides, runtime)
+        self.manager.create_session(template_id)
 
-    def _handle_close_session(self):
-        session_id = self._get_current_session_id()
-        if session_id:
-            self.manager.remove_session(session_id)
-
-    def _run_default_action(self):
-        session_id = self._get_current_session_id()
-        if not session_id:
-            return
-        view = self._session_views.get(session_id)
-        if not view:
-            return
-        if not view.run_default_action():
-            QMessageBox.information(self, "提示", "当前会话未配置常用操作")
-
-    def _select_relative_session(self, delta: int):
-        visible_rows = [idx for idx in range(self.session_list.count()) if not self.session_list.item(idx).isHidden()]
-        if not visible_rows:
-            return
-        current_row = self.session_list.currentRow()
-        if current_row not in visible_rows:
-            target_row = visible_rows[0]
-        else:
-            pos = visible_rows.index(current_row)
-            target_row = visible_rows[(pos + delta) % len(visible_rows)]
-        self.session_list.setCurrentRow(target_row)
-
-    def _get_current_session_id(self) -> Optional[str]:
-        item = self.session_list.currentItem()
-        if not item or item.isHidden():
-            return None
-        return item.data(Qt.ItemDataRole.UserRole)
-
-    def _apply_filters(self):
-        query = self.search_input.text().strip().lower()
-        tag_filter = self.tag_filter.currentData()
-        for idx in range(self.session_list.count()):
-            item = self.session_list.item(idx)
-            session_id = item.data(Qt.ItemDataRole.UserRole)
-            session = self.manager.sessions.get(session_id)  # type: ignore[attr-defined]
-            if not session:
-                item.setHidden(True)
-                continue
-            matches = True
-            if query:
-                haystack = " ".join(
-                    [
-                        session.display_name.lower(),
-                        session.description.lower(),
-                        (session.cwd or "").lower(),
-                    ]
-                )
-                matches = query in haystack
-            if matches and tag_filter:
-                matches = tag_filter in session.tags
-            item.setHidden(not matches)
-        current = self.session_list.currentItem()
-        if not current or current.isHidden():
-            self._select_first_visible()
-
-    def _select_first_visible(self):
-        for idx in range(self.session_list.count()):
-            item = self.session_list.item(idx)
-            if not item.isHidden():
-                self.session_list.setCurrentRow(idx)
-                return
-        self.session_list.clearSelection()
-        self.terminal_stack.setCurrentWidget(self.empty_state)
-
-    def _focus_on_session(self, session_id: str):
-        item = self._session_items.get(session_id)
-        view = self._session_views.get(session_id)
-        if not item or not view:
-            return
-        row = self.session_list.row(item)
-        self.session_list.setCurrentRow(row)
-        self.terminal_stack.setCurrentWidget(view)
-        view.focus_terminal()
-
-    def _on_session_created(self, session: Session):
-        item = QListWidgetItem()
+    def _on_session_created(self, session):
+        # Create list item
+        item = QListWidgetItem(self.session_list)
         item.setData(Qt.ItemDataRole.UserRole, session.id)
-        widget = SessionListItemWidget(session)
-        item.setSizeHint(widget.sizeHint())
+        # Set size hint for custom widget
+        item.setSizeHint(SessionListItemWidget(session).sizeHint())
         self.session_list.addItem(item)
-        self.session_list.setItemWidget(item, widget)
         self._session_items[session.id] = item
+
+        # Create custom widget for list item
+        widget = SessionListItemWidget(session)
+        self.session_list.setItemWidget(item, widget)
         self._session_list_widgets[session.id] = widget
 
-        detail = SessionDetailWidget(session, self.manager.update_session, self.app_config)
-        self._session_views[session.id] = detail
+        # Create detail view
+        detail = SessionDetailWidget(session, self._on_session_updated_from_view, self.app_config)
         self.terminal_stack.addWidget(detail)
+        self._session_views[session.id] = detail
 
-        # Refresh tag filter with new tags
+        # Select the new session
+        self.session_list.setCurrentItem(item)
+        
+        # Update tags
         self._refresh_tag_filter()
 
-        self._apply_filters()
-        self._focus_on_session(session.id)
-        self._refresh_placeholder_visibility()
+    def _on_session_removed(self, session_id: str):
+        if session_id in self._session_views:
+            view = self._session_views.pop(session_id)
+            self.terminal_stack.removeWidget(view)
+            view.shutdown()
+            view.deleteLater()
 
-    def _on_session_removed(self, session: Session):
-        item = self._session_items.pop(session.id, None)
-        widget = self._session_list_widgets.pop(session.id, None)
-        if item:
+        if session_id in self._session_items:
+            item = self._session_items.pop(session_id)
             row = self.session_list.row(item)
             self.session_list.takeItem(row)
-        if widget:
-            widget.deleteLater()
-        detail = self._session_views.pop(session.id, None)
-        if detail:
-            detail.shutdown()
-            self.terminal_stack.removeWidget(detail)
-            detail.deleteLater()
-        self._refresh_placeholder_visibility()
-        self._select_first_visible()
+            
+        if session_id in self._session_list_widgets:
+            self._session_list_widgets.pop(session_id)
 
-    def _on_session_updated(self, session: Session):
-        view = self._session_views.get(session.id)
-        if view:
-            view.refresh(session)
-        widget = self._session_list_widgets.get(session.id)
-        if widget:
-            widget.refresh(session)
-
-        # Refresh tag filter in case tags were updated
+        if self.session_list.count() == 0:
+            self.terminal_stack.setCurrentWidget(self.empty_state)
+            
+        # Update tags
         self._refresh_tag_filter()
 
-        self._apply_filters()
+    def _on_session_updated(self, session):
+        if session.id in self._session_list_widgets:
+            self._session_list_widgets[session.id].refresh(session)
+        if session.id in self._session_views:
+            self._session_views[session.id].refresh(session)
+        
+        # Update tags (in case tags changed)
+        self._refresh_tag_filter()
 
-    def _refresh_placeholder_visibility(self):
-        if not self._session_views:
-            self.terminal_stack.setCurrentWidget(self.empty_state)
+    def _on_session_updated_from_view(self, session):
+        # Callback from detail view (e.g. description changed)
+        self.manager.update_session(session)
 
     def _on_session_selected(self, row: int):
         if row < 0:
-            self.terminal_stack.setCurrentWidget(self.empty_state)
             return
         item = self.session_list.item(row)
-        if not item or item.isHidden():
-            self.terminal_stack.setCurrentWidget(self.empty_state)
-            return
         session_id = item.data(Qt.ItemDataRole.UserRole)
-        view = self._session_views.get(session_id)
-        if view:
+        if session_id in self._session_views:
+            view = self._session_views[session_id]
             self.terminal_stack.setCurrentWidget(view)
             view.focus_terminal()
 
-    def _show_shortcuts(self):
-        """Show comprehensive help dialog with shortcuts and tips."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("快捷键与使用帮助")
-        dialog.setMinimumWidth(500)
-        layout = QVBoxLayout(dialog)
-
-        # Add header
-        header = QLabel("WinConsole Manager - 快捷键参考")
-        header.setStyleSheet("font-size: 14pt; font-weight: bold; margin-bottom: 10px;")
-        layout.addWidget(header)
-
-        # Shortcuts section
-        shortcuts_label = QLabel("全局快捷键:")
-        shortcuts_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
-        layout.addWidget(shortcuts_label)
-
-        shortcuts = [
-            ("Ctrl+N", "新建会话", "从模板创建新的终端会话"),
-            ("Ctrl+W", "关闭当前会话", "关闭当前激活的终端会话"),
-            ("Ctrl+Tab", "切换到下一个会话", "在可见会话之间循环切换"),
-            ("Ctrl+Shift+Tab", "切换到上一个会话", "反向循环切换会话"),
-            ("F5", "执行默认操作", "运行当前会话的第一个常用操作"),
-            ("Ctrl+F", "搜索终端输出", "在当前终端输出中搜索文本"),
-            ("Tab", "自动补全", "在命令输入框中补全文件路径"),
-        ]
-
-        for keys, title, desc in shortcuts:
-            row = QHBoxLayout()
-            key_label = QLabel(keys)
-            key_label.setStyleSheet("font-weight: bold; color: #0066CC; min-width: 120px;")
-            row.addWidget(key_label)
-
-            desc_widget = QWidget()
-            desc_layout = QVBoxLayout(desc_widget)
-            desc_layout.setContentsMargins(0, 0, 0, 0)
-            desc_layout.setSpacing(2)
-
-            title_label = QLabel(title)
-            title_label.setStyleSheet("font-weight: bold;")
-            desc_layout.addWidget(title_label)
-
-            detail_label = QLabel(desc)
-            detail_label.setStyleSheet("color: #666666; font-size: 9pt;")
-            detail_label.setWordWrap(True)
-            desc_layout.addWidget(detail_label)
-
-            row.addWidget(desc_widget, stretch=1)
-            layout.addLayout(row)
-
-        # Terminal tips section
-        tips_label = QLabel("终端使用技巧:")
-        tips_label.setStyleSheet("font-weight: bold; margin-top: 15px;")
-        layout.addWidget(tips_label)
-
-        tips = [
-            "• 输入 wsl / cmd / powershell 可快速切换 Shell 环境",
-            "• 会话关闭后将自动保存，重启应用时会恢复",
-            "• 可在 config/app.yaml 中自定义主题和字体",
-            "• 使用标签过滤器快速查找特定类型的会话",
-            "• 编辑会话描述可帮助记录工作内容",
-        ]
-
-        for tip in tips:
-            tip_label = QLabel(tip)
-            tip_label.setWordWrap(True)
-            tip_label.setStyleSheet("margin-left: 10px; color: #333333;")
-            layout.addWidget(tip_label)
-
-        # Configuration hint
-        config_label = QLabel("配置文件位置:")
-        config_label.setStyleSheet("font-weight: bold; margin-top: 15px;")
-        layout.addWidget(config_label)
-
-        config_paths = [
-            f"• 会话状态: ~/.winconsole/session_state.json",
-            f"• 日志文件: ~/.winconsole/logs/winconsole.log",
-            f"• 应用配置: config/app.yaml",
-            f"• 会话模板: config/sessions.yaml",
-        ]
-
-        for path in config_paths:
-            path_label = QLabel(path)
-            path_label.setWordWrap(True)
-            path_label.setStyleSheet("margin-left: 10px; font-family: monospace; color: #555555;")
-            layout.addWidget(path_label)
-
-        # Close button
-        close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
-
-        dialog.exec()
-
-    def _ensure_pywinpty(self):
-        """Check for pywinpty dependency with helpful error message."""
-        if os.name != "nt":
+    def _handle_close_session(self):
+        item = self.session_list.currentItem()
+        if not item:
             return
-        from .terminal_backend import pywinpty
+        session_id = item.data(Qt.ItemDataRole.UserRole)
+        self.manager.remove_session(session_id)
 
-        if pywinpty is None:
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Critical)
-            msg.setWindowTitle("缺少必需依赖")
-            msg.setText("WinConsole 需要 pywinpty 才能在 Windows 上运行")
+    def _select_relative_session(self, delta: int):
+        count = self.session_list.count()
+        if count <= 1:
+            return
+        current = self.session_list.currentRow()
+        next_row = (current + delta) % count
+        self.session_list.setCurrentRow(next_row)
 
-            detailed_text = """
-<h3>问题说明</h3>
-<p>pywinpty 是在 Windows 上提供交互式终端所必需的库。</p>
+    def _run_default_action(self):
+        current_widget = self.terminal_stack.currentWidget()
+        if isinstance(current_widget, SessionDetailWidget):
+            current_widget.run_default_action()
 
-<h3>解决方法</h3>
-<p>请选择以下方式之一安装 pywinpty：</p>
+    def _show_shortcuts(self):
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self,
+            "快捷键",
+            "Ctrl+N: 创建新会话\n"
+            "Ctrl+W: 关闭当前会话\n"
+            "Ctrl+Tab: 下一个会话\n"
+            "Ctrl+Shift+Tab: 上一个会话\n"
+            "F5: 运行默认操作\n"
+            "Ctrl+F: 在终端中查找"
+        )
 
-<h4>方式 1: 使用 pip（推荐）</h4>
-<pre style="background-color: #f0f0f0; padding: 10px;">
-pip install pywinpty
-</pre>
+    def _apply_filters(self):
+        search_text = self.search_input.text().lower()
+        tag_filter = self.tag_filter.currentData()
 
-<h4>方式 2: 使用 conda</h4>
-<pre style="background-color: #f0f0f0; padding: 10px;">
-conda install -c conda-forge pywinpty
-</pre>
+        for i in range(self.session_list.count()):
+            item = self.session_list.item(i)
+            session_id = item.data(Qt.ItemDataRole.UserRole)
+            session = self.manager.sessions.get(session_id)
+            
+            if not session:
+                continue
 
-<h4>方式 3: 使用项目预置的 wheel 文件</h4>
-<pre style="background-color: #f0f0f0; padding: 10px;">
-pip install pywinpty-2.0.13-cp311-none-win_amd64.whl
-</pre>
+            # Check tag filter
+            if tag_filter and tag_filter not in session.tags:
+                item.setHidden(True)
+                continue
 
-<p style="margin-top: 15px;">
-<b>注意</b>: 安装完成后请重启 WinConsole。
-</p>
+            # Check search text
+            if search_text:
+                matches = (
+                    search_text in session.display_name.lower() or
+                    search_text in (session.description or "").lower() or
+                    search_text in (session.cwd or "").lower()
+                )
+                if not matches:
+                    item.setHidden(True)
+                    continue
 
-<p>
-如果遇到问题，请查看日志文件：<br>
-<code>~/.winconsole/logs/winconsole.log</code>
-</p>
-"""
-            msg.setInformativeText("点击 '显示详细信息' 查看安装步骤")
-            msg.setDetailedText(detailed_text)
-
-            # Add custom buttons
-            copy_btn = msg.addButton("复制安装命令", QMessageBox.ButtonRole.ActionRole)
-            msg.addButton("退出", QMessageBox.ButtonRole.RejectRole)
-
-            msg.exec()
-
-            # If user clicked copy button
-            if msg.clickedButton() == copy_btn:
-                from PyQt6.QtWidgets import QApplication
-                clipboard = QApplication.clipboard()
-                clipboard.setText("pip install pywinpty")
-                QMessageBox.information(self, "已复制", "安装命令已复制到剪贴板")
-
-            raise SystemExit(1)
-
-    def closeEvent(self, event):
-        """Handle window close event - save session state before closing."""
-        # Save current sessions to disk
-        self.manager.save_state()
-
-        # Shutdown all session backends
-        for view in self._session_views.values():
-            view.shutdown()
-
-        event.accept()
+            item.setHidden(False)

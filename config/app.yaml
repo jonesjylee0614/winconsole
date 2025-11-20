@@ -1,4 +1,4 @@
-theme: "light"
+theme: "vscode-dark"  # 可选: vscode-dark, dracula, one-dark, monokai, github-dark, powershell
 font_family: "Cascadia Code"
 font_size: 12
 bailian:
